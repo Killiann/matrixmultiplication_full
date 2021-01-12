@@ -44,11 +44,11 @@ public:
 		if (fill)fillMatrix();
 	}
 
-	std::size_t row_count() const { return n_rows; }
-	std::size_t col_count() const { return n_cols; }
+	inline std::size_t row_count() const { return n_rows; }
+	inline std::size_t col_count() const { return n_cols; }
 
-	int& operator()(std::size_t i, std::size_t j) { return data[i * n_cols + j]; }
-	const int& operator()(std::size_t i, std::size_t j) const { return data[i * n_cols + j]; }
+	inline int& operator()(std::size_t i, std::size_t j) { return data[i * n_cols + j]; }
+	inline const int& operator()(std::size_t i, std::size_t j) const { return data[i * n_cols + j]; }
 
 	void fillMatrix();
 	void clearMatrix();
@@ -56,7 +56,7 @@ public:
 
 void Matrix::fillMatrix() {
 	for (auto &i : data)
-		i = RandomNumberGenerator(0, 99);
+		i = RandomNumberGenerator(-99, 99);
 }
 void Matrix::clearMatrix() {
 	for (auto &i : data)
@@ -90,19 +90,21 @@ void multiplyMatrices(Matrix &m1, Matrix &m2, Matrix &res) {
 void multiplyRows(Matrix &m1, Matrix &m2, Matrix &res, int startRow, int endRow) {
 	for (int r = startRow; r < endRow; ++r) 
 		for (int c = 0; c < m2.col_count(); ++c) 
-			for (int i = 0; i < m1.col_count(); ++i) 
-				res(r, c) += m1(r, i) * m2(i, c);			
+			for (int i = 0; i < m1.col_count() / 4; ++i) { //unrolled loop
+				res(r, c) += m1(r, i) * m2(i, c);
+				res(r, c) += m1(r, i + 1) * m2(i + 1, c);
+				res(r, c) += m1(r, i + 2) * m2(i + 2, c);
+				res(r, c) += m1(r, i + 3) * m2(i + 3, c);
+			}
 }
 
 void multiplyMatricesT1(Matrix &m1, Matrix &m2, Matrix &res, int thread_count) {
 	if (m1.col_count() == m2.row_count()) {
-		while (m1.row_count() < thread_count) --thread_count;
+		if(m1.row_count() < thread_count) thread_count = m1.row_count();
 
-		int rowsPerThread = (m1.row_count() / thread_count);
-		for (int i = 0; i < thread_count; ++i) {
-			threads.at(i) = std::thread(multiplyRows, std::ref(m1), std::ref(m2), std::ref(res), i * rowsPerThread, (i * rowsPerThread) + rowsPerThread);
-			std::cout << i * rowsPerThread << "-" << (i * rowsPerThread) + rowsPerThread << std::endl;
-		}
+		int rowsPerThread = (m1.row_count() / thread_count); //implement possible overhead when not divisible by num of cores (keeping to multiples of 2 for now with 4/8 cores)
+		for (int i = 0; i < thread_count; ++i) 
+			threads.at(i) = std::thread(multiplyRows, std::ref(m1), std::ref(m2), std::ref(res), i * rowsPerThread, (i * rowsPerThread) + rowsPerThread);			
 
 		for (int i = 0; i < thread_count; ++i)
 			threads.at(i).join();
@@ -111,60 +113,59 @@ void multiplyMatricesT1(Matrix &m1, Matrix &m2, Matrix &res, int thread_count) {
 
 int main()
 {	
-	//git test
+	//time management setup
 	double PCFreq = 0.0;
 	double aggregateTime = 0.0;
-	std::string input_code;
 	std::vector<timeFrame> savedTimes;
-
 	if (!QueryPerformanceFrequency(&li))
 		std::cout << "Performance counter failed.\n";
-
 	PCFreq = double(li.QuadPart) / 1000.0;
 	
+	//getting right number of threads for current setup
 	int threadCount = std::thread::hardware_concurrency();	
-	//threadCount = 2; //override
+	std::cout << "available threads: " << threadCount << "\n";
 	for (int i = 0; i < threadCount; ++i)
 		threads.push_back(std::thread());
+		
+	//matrix sizes (x2 each run until upperlimit)
+	int m_size = 4;
+	const int upperLimit = 128;
 
-	int m_size = 512;
-	const int upperLimit = 512;
-
-	std::cout << "available threads: " << threadCount << "\n";
 	while (m_size <= upperLimit) {
-		aggregateTime = 0;
 		//setup matrices
 		Matrix m1, m2, result;
 		std::cout << "matrix size: " << m_size << std::endl;
 		m1 = Matrix(m_size, m_size);
 		m2 = Matrix(m_size, m_size);
 		result = Matrix(m_size, m_size);
-
+		
+		aggregateTime = 0;
 		for (int i = 0; i < TESTCOUNTER; ++i) {
+			//reset matrices
 			m1.fillMatrix();
 			m2.fillMatrix();
-			result.clearMatrix();
+			result.clearMatrix();			
 
 			QueryPerformanceCounter(&liStart); //start timer
-			//multiplyMatrices(m1, m2, result);
-			multiplyMatricesT1(m1, m2, result, threadCount);
+			//multiplyMatrices(m1, m2, result); //non threaded
+			multiplyMatricesT1(m1, m2, result, threadCount); //threaded v1
 			QueryPerformanceCounter(&liEnd); //end timer
 
 			double timeTaken = double(liEnd.QuadPart - liStart.QuadPart) / PCFreq;
 			aggregateTime += timeTaken;
 			std::cout << timeTaken << "\n";
 		}
-
 		double avg = aggregateTime / double(TESTCOUNTER);
 		savedTimes.emplace_back(m1.row_count(), m1.col_count(), m2.row_count(), m2.col_count(), avg);
 
-		std::cout << "total average: " << avg << "ms.\n";
-		//std::cout << "'c' to continue, 'x' to see all averages and exit.\n=============================\n";
+		std::cout << "total average: " << avg << "ms.\n";		
 		m_size *= 2;
 	}	
 
-	std::cout << "All average times: \n";
-	for (auto t : savedTimes)
-		std::cout << t.m1rows << "x" << t.m1cols << ": " << t.multiplicationTime << std::endl;
+	std::cout << "\n\nAll average times: \n";
+	for (auto t : savedTimes) {
+		std::string leftSide = (std::to_string(t.m1rows) +  "x" +  std::to_string(t.m1cols) +  ": ");
+		std::cout << std::setw(8) << std::left << std::setfill(' ') << leftSide << t.multiplicationTime << std::endl;		
+	}
 	return 0;
 }
